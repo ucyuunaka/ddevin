@@ -1,0 +1,105 @@
+{
+  "name": "ddevin",
+  "displayName": "ddevin",
+  "description": "Bring your own model providers into Devin: OpenAI- and Anthropic-compatible endpoints injected into the native model list, including Fusion presets.",
+  "version": "0.3.0",
+  "publisher": "ucyuunaka",
+  "author": "ucyuunaka",
+  "license": "MIT",
+  "homepage": "https://github.com/ucyuunaka/ddevin#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ucyuunaka/ddevin.git"
+  },
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./src/extension.cjs",
+  "activationEvents": [
+    "*"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
+  "scripts": {
+    "package": "node scripts/package.cjs",
+    "vscode:uninstall": "node src/lifecycle/uninstall.cjs"
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ddevin",
+          "title": "ddevin",
+          "icon": "media/ddevin.svg"
+        }
+      ]
+    },
+    "views": {
+      "ddevin": [
+        {
+          "id": "ddevin.panel",
+          "name": "控制面板",
+          "type": "webview",
+          "icon": "media/ddevin.svg"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "ddevin.openPanel",
+        "title": "ddevin：控制面板"
+      },
+      {
+        "command": "ddevin.configure",
+        "title": "ddevin：配置模型供应商"
+      },
+      {
+        "command": "ddevin.refreshModels",
+        "title": "ddevin：获取并导入模型"
+      },
+      {
+        "command": "ddevin.selectFusion",
+        "title": "ddevin：选择 Fusion 预设"
+      },
+      {
+        "command": "ddevin.status",
+        "title": "ddevin：状态日志"
+      },
+      {
+        "command": "ddevin.disable",
+        "title": "ddevin：停用并恢复官方连接"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "ddevin.openPanel"
+        },
+        {
+          "command": "ddevin.configure"
+        },
+        {
+          "command": "ddevin.refreshModels"
+        },
+        {
+          "command": "ddevin.selectFusion"
+        },
+        {
+          "command": "ddevin.status"
+        },
+        {
+          "command": "ddevin.disable"
+        }
+      ]
+    }
+  }
+}
