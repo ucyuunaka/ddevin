@@ -81,6 +81,7 @@ entries.push({ name: '[Content_Types].xml', data: Buffer.from(
   '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
   '<Default Extension="json" ContentType="application/json"/><Default Extension="cjs" ContentType="application/javascript"/>' +
   '<Default Extension="md" ContentType="text/markdown"/><Default Extension="svg" ContentType="image/svg+xml"/>' +
+  '<Default Extension="png" ContentType="image/png"/>' +
   '<Default Extension="vsixmanifest" ContentType="text/xml"/>' +
   '<Default Extension="" ContentType="text/plain"/></Types>') });
 entries.push({ name: 'extension.vsixmanifest', data: Buffer.from(
