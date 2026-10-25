@@ -11,6 +11,7 @@ const { spawn } = require('node:child_process');
 const { paths, readConfig, writeConfig } = require('./config.cjs');
 const { buildCatalog, normalizeFusionConfig } = require('./catalog.cjs');
 const { createManager } = require('./panel/model.cjs');
+const { createOrderStore } = require('./panel/order.cjs');
 const { installLsInjection } = require('./runtime/ls-injection.cjs');
 const { installAcpInjection } = require('./runtime/acp-injection.cjs');
 const { installAuthStatusInjection } = require('./runtime/auth-status-injection.cjs');
@@ -181,6 +182,8 @@ async function activate(context) {
     return built;
   };
   let management, manager;
+  const orderFile = path.join(root, 'panel-order.json');
+  const orderStore = createOrderStore({ file: orderFile });
   const nativeModels = new Map(), localNativeModels = new Map();
   let nativeCatalogStatus = 'loading', syncPending, syncAbort, syncTimer;
   const nativeModelKey = entry => JSON.stringify([
@@ -491,7 +494,7 @@ async function activate(context) {
     readModels: () => catalog().models });
   pickerRefresh.prime();
   context.subscriptions.push(pickerRefresh);
-  manager = createManager({ read: config, write: current => writeConfig(current, configFile),
+  manager = createManager({ read: config, write: current => writeConfig(current, configFile), orderStore,
     nativeModels: () => [...nativeModels.values()], refreshNativeModels, nativeCatalogStatus: () => nativeCatalogStatus,
     selectedFusion: () => {
       const current = globalSetting(vscode.workspace.getConfiguration('devin.acp'), 'agentPreferences')['devin-cli']?.model;
@@ -535,6 +538,11 @@ async function activate(context) {
   };
   fs.watchFile(configFile, { interval: 500, persistent: false }, onConfigChanged);
   context.subscriptions.push({ dispose: () => fs.unwatchFile(configFile, onConfigChanged) });
+  // Display order lives outside config.json on purpose: changing it must not
+  // enter enable/picker/catalog refresh paths. Only repaint the management UI.
+  const onOrderChanged = () => { try { void management?.publish()?.catch(() => {}); } catch {} };
+  fs.watchFile(orderFile, { interval: 500, persistent: false }, onOrderChanged);
+  context.subscriptions.push({ dispose: () => fs.unwatchFile(orderFile, onOrderChanged) });
   const preferenceSubscription = vscode.workspace.onDidChangeConfiguration?.(event => {
     if (typeof event?.affectsConfiguration === 'function' && !event.affectsConfiguration('devin.acp.agentPreferences')) return;
     return reconcilePreference();

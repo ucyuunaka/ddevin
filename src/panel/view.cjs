@@ -21,7 +21,7 @@ function renderPanel({ nonce, cspSource } = {}) {
 *{box-sizing:border-box}
 body{margin:0;padding:0 16px 48px;font:13px/1.45 var(--vscode-font-family,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif);color:var(--fg);background:var(--bg);overflow-wrap:break-word;-webkit-font-smoothing:antialiased}
 h2,h3{font-size:11px;font-weight:600;line-height:16px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:22px var(--pad) 7px}
-.sh{display:flex;align-items:center;gap:8px;min-height:var(--h);margin:18px var(--pad) 4px}.sh h2,.sh h3{margin:0}
+.sh{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:var(--h);margin:18px var(--pad) 4px}.sh h2,.sh h3{margin:0}
 .foot{margin:-8px var(--pad) 16px;font-size:11.5px;color:var(--muted)}
 .bar{display:flex;gap:10px;align-items:center;padding:18px 0 2px}
 .title{font-size:20px;font-weight:700;letter-spacing:-.3px}
@@ -76,6 +76,26 @@ td input{width:100%;min-width:0}
 .eff .grp:nth-child(2){order:3;flex:1 1 100%}.eff .grp:nth-child(2) input.efflist{flex:1 1 auto;width:auto}
 .phead{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .pinfo{flex:1 1 200px;min-width:0}
+.ordctl{display:inline-flex;gap:2px;align-items:center;flex:0 0 auto;vertical-align:middle}
+button.ord{width:var(--h);height:var(--h);padding:0;background:var(--seg);color:var(--muted);font-size:13px;line-height:1;flex:0 0 auto}
+button.ord:hover{filter:none;background:var(--segon);color:var(--fg)}
+button.ord.drag{cursor:grab;font-size:16px;touch-action:none;user-select:none}
+button.ord.drag:active{cursor:grabbing}
+button.ord-priority{font-size:11px;padding:0 9px}
+.plist{display:block}
+.mlhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 4px}
+.mlhead .ctitle{margin:0}
+.modelid{display:flex;align-items:center;gap:6px;min-width:0}
+.ordererr{border-left:3px solid var(--err)}
+.card.dragging{opacity:.72;outline:2px solid var(--link);outline-offset:-2px;background:color-mix(in srgb,var(--link) 8%,var(--card))}
+.plist.provider-order-dragging .card>.pbody,.plist.provider-order-dragging .card>[data-prov]{display:none}
+.card.dragging>.pbody,.card.dragging [data-prov]{display:none}
+.plist.provider-order-dragging .card>.phead,.card.dragging>.phead{margin:0}
+.card.dragging.drop-invalid,tr.mrow.dragging.drop-invalid{outline-color:var(--err)}
+tr.mrow.dragging{opacity:.72;outline:2px solid var(--link);outline-offset:-2px;background:color-mix(in srgb,var(--link) 8%,var(--bg))}
+[data-order-list].drag-target{box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--link) 55%,transparent);border-radius:var(--r)}
+body.is-dragging,body.is-dragging *{cursor:grabbing!important;user-select:none!important}
+body.is-dragging .card.dragging .phead{cursor:grabbing}
 .pname{display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:14px}
 .pbtns{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-left:auto}
 .purl{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;margin-top:1px}
@@ -98,7 +118,7 @@ td input.out{width:80px}
 button.caret{width:22px;height:22px;padding:0;background:none;color:var(--muted);font-size:18px;line-height:1;border-radius:6px;transition:transform .2s,background .15s}
 button.caret[aria-expanded="true"]{transform:rotate(90deg)}
 button.caret:hover{filter:none;color:var(--fg);background:var(--seg)}
-.ops{display:flex;gap:10px;align-items:center;white-space:nowrap}
+.ops{display:flex;gap:10px;align-items:center;flex-wrap:wrap;white-space:nowrap}
 .ops label{cursor:pointer}
 .logbox{font:11px/1.55 var(--mono);max-height:420px;overflow:auto;background:var(--card);border-radius:var(--r);padding:10px var(--pad);white-space:pre-wrap;word-break:break-all}
 .logline+.logline{margin-top:2px}.logline.warn{color:var(--warn)}.logline.error{color:var(--err)}.logline.debug,.logline.trace{color:var(--muted)}
@@ -153,14 +173,167 @@ function req(type, payload) {
     vscode.postMessage({ id, type, payload });
   });
 }
-async function call(type, payload, ok) {
-  try { await req(type, payload); if (ok) toast(ok); }
+async function call(type, payload, ok, done) {
+  try { await req(type, payload); done?.(); if (ok) toast(ok); }
   catch (e) { toast(e.message || '操作失败', true); }
+}
+/* ---------- 未提交现场 ---------- */
+const drafts = new Map();
+const editingProviders = new Set();
+let composing = false, deferredState = null;
+const orderPending = new Set(), orderPreviews = new Map();
+let orderFocusIntent = null;
+let dragState = null, dragRaf = 0;
+document.addEventListener('compositionstart', () => { composing = true; }, true);
+document.addEventListener('compositionend', () => {
+  composing = false;
+  setTimeout(flushDeferredState, 0);
+}, true);
+function fieldKey(el) {
+  if (!el) return '';
+  const d = el.dataset || {};
+  if (d.draft) return d.draft;
+  if (d.role) return 'role:' + d.role + ':' + d.ref;
+  if (d.imp) return 'imp:' + (state?.importCandidates?.providerId || '') + ':' + d.imp;
+  if (d.h) return 'hidden:' + d.h;
+  if (d.a === 'pe') return 'provider:' + d.id + ':enabled';
+  if (el.id) return 'id:' + el.id;
+  if (d.add) return 'add:' + d.add;
+  if (d.m) return ['model', d.p, d.mid, d.m].join(':');
+  return '';
+}
+function isDraftField(el) {
+  // #u-native only controls which role candidates are visible in this webview;
+  // it is not server state, so it must not be replayed as a draft.
+  return el.id !== 'u-native';
+}
+function rememberDraft(event) {
+  const el = event.target;
+  if (!el?.matches || !el.closest('#page') || !isDraftField(el)) return;
+  const key = fieldKey(el);
+  if (!key) return;
+  drafts.set(key, { checkbox: el.type === 'checkbox' || el.type === 'radio', value: el.value, checked: el.checked });
+}
+document.addEventListener('input', rememberDraft, true);
+document.addEventListener('change', rememberDraft, true);
+const clearDrafts = (...keys) => keys.flat().forEach(key => drafts.delete(key));
+function clearDraftIfUnchanged(key, el) {
+  const draft = drafts.get(key);
+  if (!draft || !el) return;
+  if (draft.checkbox ? draft.checked === el.checked : draft.value === el.value) drafts.delete(key);
+}
+const clearSubmitted = values => {
+  for (const [key, value] of Object.entries(values)) {
+    const draft = drafts.get(key);
+    if (!draft || draft.value === value) drafts.delete(key);
+  }
+};
+function clearDraftPrefix(prefix) {
+  for (const key of drafts.keys()) if (key.startsWith(prefix)) drafts.delete(key);
+}
+const providerDraftPrefix = id => 'edit:' + id + ':';
+const clearEditDrafts = id => clearDraftPrefix(providerDraftPrefix(id));
+const clearProviderDrafts = id => {
+  clearEditDrafts(id);
+  clearDraftPrefix('model:' + id + ':');
+  clearDrafts('add:' + id, 'provider:' + id + ':enabled');
+};
+const DRAFT_MODEL_FIELDS = ['label', 'effortMode', 'efforts', 'defaultEffort', 'contextWindow', 'maxOutputTokens', 'enabled'];
+const DRAFT_EDIT_FIELDS = ['name', 'url', 'fmt', 'key'];
+function pruneDrafts() {
+  if (!state) return;
+  const valid = new Set(), import_ = state.importCandidates, imported = new Set((import_?.models || []).map(item => item.id));
+  for (const provider of state.providers || []) {
+    valid.add('add:' + provider.id);
+    valid.add('provider:' + provider.id + ':enabled');
+    for (const field of DRAFT_EDIT_FIELDS) valid.add('edit:' + provider.id + ':' + field);
+    for (const model of provider.models || []) {
+      for (const field of DRAFT_MODEL_FIELDS) valid.add('model:' + provider.id + ':' + model.id + ':' + field);
+    }
+  }
+  for (const [role, items] of Object.entries(state.roleLists || {})) {
+    for (const item of items || []) valid.add('role:' + role + ':' + JSON.stringify(item.ref));
+  }
+  for (const model of state.nativeModels || []) valid.add('hidden:' + model.uid);
+  for (const key of [...drafts.keys()]) {
+    if (key.startsWith('imp:')) {
+      const prefix = import_ ? 'imp:' + import_.providerId + ':' : '';
+      if (!import_ || !key.startsWith(prefix) || !imported.has(key.slice(prefix.length))) drafts.delete(key);
+    } else if (/^(?:add|edit|model|provider|role|hidden):/.test(key) && !valid.has(key)) drafts.delete(key);
+  }
+}
+function applyDrafts() {
+  for (const el of document.querySelectorAll('#page input, #page select')) {
+    const key = fieldKey(el), draft = drafts.get(key);
+    if (!draft) continue;
+    if (draft.checkbox) el.checked = draft.checked;
+    else if (el.tagName === 'SELECT') {
+      const previous = el.value;
+      el.value = draft.value;
+      if (el.value !== draft.value) { el.value = previous; drafts.delete(key); }
+    } else el.value = draft.value;
+  }
+}
+function focusKey(el) {
+  if (!el?.dataset) return '';
+  return el.dataset.focusKey || fieldKey(el);
+}
+function focusElement(key) {
+  if (!key) return null;
+  return [...document.querySelectorAll('#page input, #page select, #page button')].find(item => focusKey(item) === key) || null;
+}
+function orderItemElement(itemKey) {
+  if (!itemKey) return null;
+  return [...document.querySelectorAll('#page [data-order-item]')].find(item => item.dataset.orderItem === itemKey) || null;
+}
+function captureFocus() {
+  const el = document.activeElement;
+  if (!el?.closest || !el.closest('#page')) return null;
+  const key = focusKey(el);
+  if (!key) return null;
+  const focus = { key, item: el.closest('[data-order-item]')?.dataset.orderItem || '' };
+  try {
+    if (typeof el.selectionStart === 'number') {
+      focus.start = el.selectionStart;
+      focus.end = el.selectionEnd;
+      focus.direction = el.selectionDirection;
+    }
+  } catch {}
+  return focus;
+}
+function focusWithFallback(focus) {
+  if (!focus) return false;
+  let el = focusElement(focus.key);
+  if ((!el || el.disabled) && focus.item) {
+    const item = orderItemElement(focus.item);
+    el = item?.querySelector('[data-order-drag]') || null;
+  }
+  if (!el || el.disabled) return false;
+  try { el.focus({ preventScroll: true }); } catch { try { el.focus(); } catch { return false; } }
+  if (typeof focus.start === 'number') {
+    try { el.setSelectionRange(focus.start, focus.end, focus.direction); } catch {}
+  }
+  return true;
+}
+function restoreFocus(focus) { focusWithFallback(focus); }
+function consumeOrderFocus() {
+  const intent = orderFocusIntent;
+  if (!intent || orderPending.has(intent.listKey)) return;
+  orderFocusIntent = null;
+  const focused = focusWithFallback(intent);
+  const item = orderItemElement(intent.item);
+  if (item && !item.contains(document.activeElement)) {
+    const rect = item.getBoundingClientRect();
+    if (rect.top < 0 || rect.bottom > (window.innerHeight || document.documentElement.clientHeight)) {
+      try { item.scrollIntoView({ block: 'nearest' }); } catch {}
+    }
+  }
+  return focused;
 }
 window.addEventListener('message', e => {
   const m = e.data;
   if (m.type === 'result') { const p = pending.get(m.id); if (p) { pending.delete(m.id); clearTimeout(p.timer); m.ok ? p.resolve() : p.reject(new Error(m.error || '操作失败')); } }
-  else if (m.type === 'state') { state = m.state; render(); }
+  else if (m.type === 'state') receiveState(m.state);
   else if (m.type === 'logs-state') { logs = m.result || logs; if (tab === 'logs') renderLogs(); }
 });
 $('#enabled').addEventListener('change', e => call('setEnabled', { enabled: e.target.checked }));
@@ -173,8 +346,119 @@ function refLabel(ref) {
 }
 const refKey = ref => ref && (ref.nativeUid ? 'n:' + ref.nativeUid : 'p:' + ref.providerId + '/' + ref.model + '/' + (ref.effort ?? ''));
 
+/* ---------- 面板展示顺序 ---------- */
+const orderListKey = (scope, providerId) => scope === 'providers' ? 'providers' : 'models:' + providerId;
+function panelOrderMeta() {
+  if (state?.panelOrder) return state.panelOrder;
+  const models = Object.create(null), tokens = Object.create(null), sortable = Object.create(null);
+  for (const provider of state?.providers || []) {
+    const id = provider.id;
+    models[id] = (provider.models || []).map(model => model.id);
+    tokens[id] = null; sortable[id] = false;
+  }
+  return { providers: (state?.providers || []).map(provider => provider.id), models, tokens: { providers: null, models: tokens },
+    sortable: { providers: false, models: sortable }, error: null };
+}
+function orderIdsFor(scope, providerId) {
+  const meta = panelOrderMeta();
+  const ids = scope === 'providers' ? meta.providers : meta.models?.[providerId];
+  return Array.isArray(ids) ? ids : [];
+}
+function orderTokenFor(scope, providerId) {
+  const tokens = panelOrderMeta().tokens || {};
+  const token = scope === 'providers' ? tokens.providers : tokens.models?.[providerId];
+  return typeof token === 'string' && token ? token : null;
+}
+function orderSortableFor(scope, providerId) {
+  const meta = panelOrderMeta(), value = scope === 'providers' ? meta.sortable?.providers : meta.sortable?.models?.[providerId];
+  return value === true && !!orderTokenFor(scope, providerId) && !meta.error;
+}
+function orderPendingFor(scope, providerId) { return orderPending.has(orderListKey(scope, providerId)); }
+function orderedItems(entries, ids) {
+  const rank = new Map();
+  (Array.isArray(ids) ? ids : []).forEach((id, index) => { if (!rank.has(id)) rank.set(id, index); });
+  return entries.map((entry, index) => ({ entry, index, rank: rank.has(entry.id) ? rank.get(entry.id) : ids.length + index }))
+    .sort((left, right) => left.rank - right.rank || left.index - right.index).map(item => item.entry);
+}
+function displayedProviders() {
+  if (!state) return [];
+  const ids = orderPreviews.get('providers') || orderIdsFor('providers');
+  return orderedItems(state.providers || [], ids);
+}
+function displayedModels(provider) {
+  const ids = orderPreviews.get('models:' + provider.id) || orderIdsFor('models', provider.id);
+  return orderedItems(provider.models || [], ids);
+}
+function isPrioritized(entries) {
+  let disabled = false;
+  for (const entry of entries) {
+    if (entry.enabled === false) disabled = true;
+    else if (disabled) return false;
+  }
+  return true;
+}
+function priorityDisabled(scope, providerId, entries) {
+  return !orderSortableFor(scope, providerId) || orderPendingFor(scope, providerId) || entries.length < 2 || isPrioritized(entries);
+}
+const orderItemKey = (scope, providerId, id) => scope === 'providers' ? 'providers:' + id : 'models:' + providerId + ':' + id;
+const orderFocusKey = (scope, providerId, id, action) => 'order:' + orderItemKey(scope, providerId, id) + ':' + action;
+function orderPayload(scope, providerId, token) {
+  const payload = { scope };
+  if (scope === 'models') payload.providerId = providerId;
+  payload.expectedToken = token;
+  return payload;
+}
+function stateTokenFor(incoming, scope, providerId) {
+  const tokens = incoming?.panelOrder?.tokens || {};
+  const token = scope === 'providers' ? tokens.providers : tokens.models?.[providerId];
+  return typeof token === 'string' && token ? token : null;
+}
+function flushDeferredState() {
+  if (composing || dragState || !deferredState) return;
+  state = deferredState;
+  deferredState = null;
+  render();
+}
+function receiveState(next) {
+  if (dragState) {
+    const token = stateTokenFor(next, dragState.scope, dragState.providerId);
+    if (!dragState.started || token === dragState.token) { deferredState = next; return; }
+    cancelDrag({ restore: true, notify: true, render: false, preserveFocus: true });
+    state = next;
+    deferredState = null;
+    render();
+    return;
+  }
+  state = next;
+  if (composing) deferredState = next;
+  else render();
+}
+async function performOrderRequest(type, scope, providerId, previewIds, token) {
+  const key = orderListKey(scope, providerId), expectedToken = token || orderTokenFor(scope, providerId);
+  if (!expectedToken || !orderSortableFor(scope, providerId) || orderPending.has(key)) return false;
+  orderPreviews.set(key, [...previewIds]);
+  orderPending.add(key);
+  render();
+  try {
+    const payload = orderPayload(scope, providerId, expectedToken);
+    if (type === 'reorderPanelList') payload.ids = [...previewIds];
+    await req(type, payload);
+    return true;
+  } catch (error) {
+    toast(error?.message || '排序保存失败', true);
+    return false;
+  } finally {
+    orderPending.delete(key);
+    orderPreviews.delete(key);
+    render();
+  }
+}
+
 function render() {
-  if (!state) { $('#page').innerHTML = '<p class="muted">加载中…</p>'; return; }
+  if (dragState) cancelDrag({ restore: false, notify: false, render: false });
+  pruneDrafts();
+  const focus = captureFocus();
+  if (!state) { $('#page').innerHTML = '<p class="muted">加载中…</p>'; applyDrafts(); restoreFocus(focus); consumeOrderFocus(); return; }
   $('#enabled').checked = state.enabled;
   const c = state.connection || {};
   $('#conn').innerHTML = '<span class="dot' + (c.state === 'ready' ? ' on' : '') + '"></span><span>LS ' + esc(c.state || '未连接') + '</span><span>·</span><span>' +
@@ -182,6 +466,9 @@ function render() {
   $('#tabs').innerHTML = TABS.map(([k, n]) => '<button class="' + (k === tab ? 'on' : '') + '" data-t="' + k + '">' + n + '</button>').join('');
   $('#tabs').querySelectorAll('button').forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
   ({ models: renderModels, fusion: renderFusion, native: renderNative, settings: renderSettings, logs: renderLogs })[tab]();
+  applyDrafts();
+  restoreFocus(focus);
+  consumeOrderFocus();
 }
 
 /* ---------- 模型 ---------- */
@@ -193,43 +480,88 @@ function diagBlock() {
     list.map(d => '<div class="muted">· ' + esc(DIAG_TEXT[d.code] || d.code) +
       (d.providerId ? '（' + esc([d.providerId, d.modelId, d.effort].filter(Boolean).join(' · ')) + '）' : '') + '</div>').join('') + '</div>';
 }
+function orderControls(scope, providerId, id, label, index, count, sortable, pending) {
+  const can = sortable && !pending;
+  const providerAttr = scope === 'models' ? ' data-order-provider="' + esc(providerId) + '"' : '';
+  const item = orderItemKey(scope, providerId, id);
+  const title = scope === 'providers' ? '供应商 ' + label : '模型 ' + label;
+  const key = action => ' data-focus-key="' + esc(orderFocusKey(scope, providerId, id, action)) + '"';
+  return '<span class="ordctl">' +
+    '<button type="button" class="ord drag" data-a="drag" data-order-scope="' + scope + '"' + providerAttr +
+      ' data-order-id="' + esc(id) + '" data-order-drag="1"' + key('drag') +
+      ' title="拖动排序：' + esc(title) + '；也可使用上移/下移按钮" aria-label="拖动' + esc(title) + '排序"' +
+      (can && count > 1 ? '' : ' disabled') + '>⠿</button>' +
+    '<button type="button" class="ord" data-a="move" data-order-scope="' + scope + '"' + providerAttr +
+      ' data-order-id="' + esc(id) + '" data-order-move="-1"' + key('up') +
+      ' title="上移' + esc(title) + '" aria-label="上移' + esc(title) + '"' +
+      (can && index > 0 ? '' : ' disabled') + '>↑</button>' +
+    '<button type="button" class="ord" data-a="move" data-order-scope="' + scope + '"' + providerAttr +
+      ' data-order-id="' + esc(id) + '" data-order-move="1"' + key('down') +
+      ' title="下移' + esc(title) + '" aria-label="下移' + esc(title) + '"' +
+      (can && index < count - 1 ? '' : ' disabled') + '>↓</button></span>';
+}
+function priorityControl(scope, providerId, label, disabled) {
+  const providerAttr = scope === 'models' ? ' data-order-provider="' + esc(providerId) + '"' : '';
+  const key = scope === 'providers' ? 'order:providers:priority' : 'order:models:' + providerId + ':priority';
+  const what = scope === 'providers' ? '供应商' : '本供应商的模型';
+  return '<button type="button" class="sec ord-priority" data-a="prioritize" data-order-scope="' + scope + '"' + providerAttr +
+    ' data-focus-key="' + esc(key) + '" title="将启用的' + esc(what) + '稳定排在停用项之前" aria-label="' + esc(what) + '启用项优先"' +
+    (disabled ? ' disabled' : '') + '>启用项优先</button>';
+}
 function renderModels() {
   const import_ = state.importCandidates;
-  $('#page').innerHTML =
-    diagBlock() +
-    '<h2>供应商</h2>' +
-    (state.providers.length ? '' : '<div class="card muted">还没有供应商。在下方添加，填写 OpenAI/Anthropic 兼容的 API 地址与密钥。</div>') +
-    state.providers.map(p =>
-      '<div class="card"><div class="phead">' +
-      '<button class="caret" data-a="collapse" data-id="' + p.id + '" aria-expanded="' + !collapsed.has(p.id) + '" title="' + (collapsed.has(p.id) ? '展开模型列表' : '折叠模型列表') + '">›</button>' +
+  const providers = displayedProviders();
+  const providerSortable = orderSortableFor('providers'), providerPending = orderPendingFor('providers');
+  const orderError = state.panelOrder?.error;
+  const providerCards = providers.map((p, providerIndex) => {
+    const models = displayedModels(p);
+    const modelSortable = orderSortableFor('models', p.id), modelPending = orderPendingFor('models', p.id);
+    const name = p.name || p.id || '供应商';
+    const table = models.length ? '<div class="tw"><table class="rt"><tr class="rh"><th>模型</th><th class="lblcol">显示名</th><th class="effcol">档位</th><th>上下文</th><th>输出</th><th>操作</th></tr>' +
+      '<tbody data-mlist="' + esc(p.id) + '" data-order-list="models:' + esc(p.id) + '">' + models.map((m, index) => {
+        const item = orderItemKey('models', p.id, m.id);
+        return '<tr class="mrow" data-mrow="' + esc(m.id) + '" data-order-id="' + esc(m.id) + '" data-order-item="' + esc(item) + '">' +
+          '<td class="mono" data-th="模型">' + esc(m.id) + '</td>' +
+          '<td data-th="显示名"><input value="' + esc(m.label) + '" data-m="label" data-p="' + esc(p.id) + '" data-mid="' + esc(m.id) + '"></td>' +
+          '<td data-th="档位"><div class="eff"><span class="grp"><span class="lab">来源</span><select class="selsrc" data-m="effortMode" data-p="' + esc(p.id) + '" data-mid="' + esc(m.id) + '" title="档位来源：自动=识别模型 ID；手动=用右侧列表；不指定=永不发推理参数">' +
+            [['auto','自动'],['manual','手动'],['none','不指定']].map(([v, n]) => '<option value="' + v + '"' + (m.effortMode === v ? ' selected' : '') + '>' + n + '</option>').join('') + '</select></span>' +
+          '<span class="grp"><span class="lab">可选</span><input value="' + esc((m.efforts || []).map(v => v ?? 'default').join(',')) + '" placeholder="default,low,high" title="Devin 里 Effort 下拉的可选项（default=供应商默认不发参数，' + esc((state.effortValues || []).join('/')) + '）；非空时优先于来源' +
+            '" data-m="efforts" data-p="' + esc(p.id) + '" data-mid="' + esc(m.id) + '" class="efflist"' + (m.effortMode === 'none' ? ' disabled' : '') + '></span>' +
+          '<span class="grp"><span class="lab">初始</span><select class="selinit" data-m="defaultEffort" data-p="' + esc(p.id) + '" data-mid="' + esc(m.id) + '" title="初始档位：模型组在 Devin 里默认选中的档位">' +
+            '<option value="">自动</option>' + (m.effortOptions || []).map(v => '<option value="' + v + '"' + (m.defaultEffort === v ? ' selected' : '') + '>' + v + '</option>').join('') + '</select></span></div></td>' +
+          '<td data-th="上下文"><input value="' + m.contextWindow + '" type="number" data-m="contextWindow" data-p="' + esc(p.id) + '" data-mid="' + esc(m.id) + '" class="ctx">' +
+            (m.limitsDetected === false ? ' <span class="badge warn" title="未从 /models 获取到上下文长度，使用默认值；请按模型实际值修改">默认</span>' : '') + '</td>' +
+          '<td data-th="输出"><input value="' + m.maxOutputTokens + '" type="number" data-m="maxOutputTokens" data-p="' + esc(p.id) + '" data-mid="' + esc(m.id) + '" class="out"></td>' +
+          '<td data-th="操作"><div class="ops"><label><input type="checkbox" ' + (m.enabled ? 'checked' : '') + ' data-m="enabled" data-p="' + esc(p.id) + '" data-mid="' + esc(m.id) + '"> 启用</label>' +
+          '<button class="sec" data-a="mdel" data-p="' + esc(p.id) + '" data-mid="' + esc(m.id) + '" title="删除该模型">删除</button>' +
+          orderControls('models', p.id, m.id, m.label || m.id, index, models.length, modelSortable, modelPending) + '</div></td></tr>';
+      }).join('') + '</tbody></table></div>' : '<p class="muted m0">暂无模型。</p>';
+    return '<div class="card" data-pcard="' + esc(p.id) + '" data-order-id="' + esc(p.id) + '" data-order-item="' + esc(orderItemKey('providers', null, p.id)) + '">' +
+      '<div class="phead">' + orderControls('providers', null, p.id, name, providerIndex, providers.length, providerSortable, providerPending) +
+      '<button class="caret" data-a="collapse" data-id="' + esc(p.id) + '" aria-expanded="' + !collapsed.has(p.id) + '" title="' + (collapsed.has(p.id) ? '展开模型列表' : '折叠模型列表') + '">›</button>' +
       '<div class="pinfo"><div class="pname"><strong>' + esc(p.name) + '</strong>' +
       '<span class="badge">' + esc(p.apiFormat) + '</span><span class="badge' + (p.keyConfigured ? '' : ' warn') + '">' + (p.keyConfigured ? '已配密钥' : '无密钥') + '</span>' +
       (p.insecure ? '<span class="badge warn" title="http:// 远程地址会以明文发送 API Key">http 明文</span>' : '') +
       '<span class="badge">' + p.models.length + ' 模型</span></div>' +
       '<span class="muted mono purl" title="' + esc(p.baseUrl) + '">' + esc(p.baseUrl) + '</span></div>' +
-      '<span class="pbtns"><button class="sec" data-a="edit" data-id="' + p.id + '">编辑</button>' +
-      '<button class="sec" data-a="fetch" data-id="' + p.id + '">获取模型</button>' +
-      '<button class="sec" data-a="del" data-id="' + p.id + '">删除</button>' +
-      '<input type="checkbox" data-a="pe" data-id="' + p.id + '"' + (p.enabled ? ' checked' : '') + ' title="' + (p.enabled ? '已启用，点击停用' : '已停用，点击启用') + '"></span></div>' +
-      '<div data-prov="' + p.id + '"></div>' +
+      '<span class="pbtns"><button class="sec" data-a="edit" data-id="' + esc(p.id) + '">编辑</button>' +
+      '<button class="sec" data-a="fetch" data-id="' + esc(p.id) + '">获取模型</button>' +
+      '<button class="sec" data-a="del" data-id="' + esc(p.id) + '">删除</button>' +
+      '<input type="checkbox" data-a="pe" data-id="' + esc(p.id) + '"' + (p.enabled ? ' checked' : '') + ' title="' + (p.enabled ? '已启用，点击停用' : '已停用，点击启用') + '"></span></div>' +
+      '<div data-prov="' + esc(p.id) + '"></div>' +
       (collapsed.has(p.id) ? '' : '<div class="pbody">' +
-        (p.models.length ? '<div class="tw"><table class="rt"><tr class="rh"><th>模型</th><th class="lblcol">显示名</th><th class="effcol">档位</th><th>上下文</th><th>输出</th><th>操作</th></tr>' +
-          p.models.map(m => '<tr><td class="mono" data-th="模型">' + esc(m.id) + '</td>' +
-            '<td data-th="显示名"><input value="' + esc(m.label) + '" data-m="label" data-p="' + p.id + '" data-mid="' + esc(m.id) + '"></td>' +
-            '<td data-th="档位"><div class="eff"><span class="grp"><span class="lab">来源</span><select class="selsrc" data-m="effortMode" data-p="' + p.id + '" data-mid="' + esc(m.id) + '" title="档位来源：自动=识别模型 ID；手动=用右侧列表；不指定=永不发推理参数">' +
-              [['auto','自动'],['manual','手动'],['none','不指定']].map(([v, n]) => '<option value="' + v + '"' + (m.effortMode === v ? ' selected' : '') + '>' + n + '</option>').join('') + '</select></span>' +
-            '<span class="grp"><span class="lab">可选</span><input value="' + esc((m.efforts || []).map(v => v ?? 'default').join(',')) + '" placeholder="default,low,high" title="Devin 里 Effort 下拉的可选项（default=供应商默认不发参数，' + esc((state.effortValues || []).join('/')) + '）；非空时优先于来源' +
-              '" data-m="efforts" data-p="' + p.id + '" data-mid="' + esc(m.id) + '" class="efflist"' + (m.effortMode === 'none' ? ' disabled' : '') + '></span>' +
-            '<span class="grp"><span class="lab">初始</span><select class="selinit" data-m="defaultEffort" data-p="' + p.id + '" data-mid="' + esc(m.id) + '" title="初始档位：模型组在 Devin 里默认选中的档位">' +
-              '<option value="">自动</option>' + (m.effortOptions || []).map(v => '<option value="' + v + '"' + (m.defaultEffort === v ? ' selected' : '') + '>' + v + '</option>').join('') + '</select></span></div></td>' +
-            '<td data-th="上下文"><input value="' + m.contextWindow + '" type="number" data-m="contextWindow" data-p="' + p.id + '" data-mid="' + esc(m.id) + '" class="ctx">' +
-              (m.limitsDetected === false ? ' <span class="badge warn" title="未从 /models 获取到上下文长度，使用默认值；请按模型实际值修改">默认</span>' : '') + '</td>' +
-            '<td data-th="输出"><input value="' + m.maxOutputTokens + '" type="number" data-m="maxOutputTokens" data-p="' + p.id + '" data-mid="' + esc(m.id) + '" class="out"></td>' +
-            '<td data-th="操作"><div class="ops"><label><input type="checkbox" ' + (m.enabled ? 'checked' : '') + ' data-m="enabled" data-p="' + p.id + '" data-mid="' + esc(m.id) + '"> 启用</label>' +
-            '<button class="sec" data-a="mdel" data-p="' + p.id + '" data-mid="' + esc(m.id) + '" title="删除该模型">删除</button></div></td></tr>').join('') +
-          '</table></div>' : '<p class="muted m0">暂无模型。</p>') +
-        '<div class="row mt8"><input placeholder="手动添加模型 ID" data-add="' + p.id + '" class="grow"><button class="sec" data-a="add" data-id="' + p.id + '">添加模型</button></div></div>') +
-      '</div>').join('') +
+        '<div class="mlhead"><span class="ctitle">模型</span><span class="muted fs11">拖动手柄或使用上下移调整' + esc(name) + '内的顺序</span><span class="grow"></span>' +
+        priorityControl('models', p.id, name, priorityDisabled('models', p.id, models)) + '</div>' + table +
+        '<div class="row mt8"><input placeholder="手动添加模型 ID" data-add="' + esc(p.id) + '" class="grow"><button class="sec" data-a="add" data-id="' + esc(p.id) + '">添加模型</button></div></div>') +
+      '</div>';
+  }).join('');
+  $('#page').innerHTML =
+    diagBlock() +
+    (orderError ? '<div class="card ordererr"><div class="ctitle err">展示顺序未加载</div><div class="muted fs11">' + esc(orderError) + '</div></div>' : '') +
+    '<div class="sh"><h2>供应商</h2><span class="muted fs11">拖动手柄排序，或使用上下移</span><span class="grow"></span>' +
+      (providers.length ? priorityControl('providers', null, '供应商', priorityDisabled('providers', null, providers)) : '') + '</div>' +
+    (providers.length ? '' : '<div class="card muted">还没有供应商。在下方添加，填写 OpenAI/Anthropic 兼容的 API 地址与密钥。</div>') +
+    '<div class="plist" data-plist="1" data-order-list="providers">' + providerCards + '</div>' +
     (import_ ? '<h3>导入模型 — ' + esc(import_.providerId) + '</h3><div class="card"><div class="grid">' +
       import_.models.map(m => '<label><input type="checkbox" data-imp="' + esc(m.id) + '" ' + (m.imported ? 'disabled checked' : '') + '> ' + esc(m.label || m.id) + '</label>').join('') +
       '</div><div class="row mt8"><span class="grow"></span><button class="sec" data-a="import-cancel">取消</button><button data-a="import">导入所选</button></div></div>' : '') +
@@ -249,45 +581,260 @@ function renderModels() {
           : '<p class="muted m0">（暂无可用' + (showNative ? '模型' : ' BYOK 模型') + '）</p>') +
         (hiddenSelected ? '<p class="muted fs11 mt8 m0">（已隐藏 ' + hiddenSelected + ' 个已选中的官方模型）</p>' : '');
     }).join('<div class="divider"></div>') + '</div>';
+  const providerSet = new Set(state.providers.map(p => p.id));
   bindModels(import_);
+  for (const id of editingProviders) {
+    if (!providerSet.has(id)) { editingProviders.delete(id); clearEditDrafts(id); }
+    else editProvider(id);
+  }
+}
+async function moveOrder(scope, providerId, id, delta) {
+  if (!orderSortableFor(scope, providerId) || orderPendingFor(scope, providerId)) return;
+  const entries = scope === 'providers' ? displayedProviders() : (() => {
+    const provider = state.providers.find(item => item.id === providerId);
+    return provider ? displayedModels(provider) : [];
+  })();
+  const ids = entries.map(entry => entry.id), index = ids.indexOf(id), target = index + delta;
+  if (index < 0 || target < 0 || target >= ids.length) return;
+  const next = [...ids];
+  [next[index], next[target]] = [next[target], next[index]];
+  const action = delta < 0 ? 'up' : 'down';
+  orderFocusIntent = { key: orderFocusKey(scope, providerId, id, action), item: orderItemKey(scope, providerId, id), listKey: orderListKey(scope, providerId) };
+  await performOrderRequest('reorderPanelList', scope, providerId, next);
+}
+async function prioritizeOrder(scope, providerId) {
+  if (!orderSortableFor(scope, providerId) || orderPendingFor(scope, providerId)) return;
+  const entries = scope === 'providers' ? displayedProviders() : (() => {
+    const provider = state.providers.find(item => item.id === providerId);
+    return provider ? displayedModels(provider) : [];
+  })();
+  if (entries.length < 2 || isPrioritized(entries)) return;
+  const next = [...entries.filter(entry => entry.enabled !== false), ...entries.filter(entry => entry.enabled === false)].map(entry => entry.id);
+  const key = scope === 'providers' ? 'order:providers:priority' : 'order:models:' + providerId + ':priority';
+  orderFocusIntent = { key, item: orderItemKey(scope, providerId, next[0]), listKey: orderListKey(scope, providerId) };
+  await performOrderRequest('prioritizeEnabledPanelList', scope, providerId, next);
 }
 function bindModels(import_) {
   $('#page').querySelectorAll('[data-a]').forEach(el => el.onclick = async () => {
     const a = el.dataset.a, id = el.dataset.id, pid = el.dataset.p, mid = el.dataset.mid;
-    if (a === 'pe') { const p = state.providers.find(x => x.id === id); call('setProviderEnabled', { id, enabled: !p.enabled }); }
-    else if (a === 'del') { call('deleteProvider', { id }); }
+    if (a === 'drag') return;
+    else if (a === 'move') { await moveOrder(el.dataset.orderScope, el.dataset.orderProvider || null, el.dataset.orderId, Number(el.dataset.orderMove)); }
+    else if (a === 'prioritize') { await prioritizeOrder(el.dataset.orderScope, el.dataset.orderProvider || null); }
+    else if (a === 'pe') { const p = state.providers.find(x => x.id === id); call('setProviderEnabled', { id, enabled: !p.enabled }, undefined, () => clearDraftIfUnchanged(fieldKey(el), el)); }
+    else if (a === 'del') { call('deleteProvider', { id }, undefined, () => { editingProviders.delete(id); clearProviderDrafts(id); }); }
     else if (a === 'collapse') { if (collapsed.has(id)) collapsed.delete(id); else collapsed.add(id); saveUi(); render(); }
     else if (a === 'edit') { editProvider(id); }
     else if (a === 'fetch') { call('refreshModels', { providerId: id }, '模型列表已获取'); }
-    else if (a === 'import') { const ids = [...document.querySelectorAll('[data-imp]:checked:not(:disabled)')].map(x => x.dataset.imp); if (ids.length) { collapsed.delete(import_.providerId); saveUi(); call('importModels', { providerId: import_.providerId, token: import_.token, ids }, '已导入'); } }
-    else if (a === 'import-cancel') { render(); }
-    else if (a === 'add') { const input = document.querySelector('[data-add="' + id + '"]'); if (input.value.trim()) { call('addModel', { providerId: id, model: { id: input.value.trim() } }); input.value = ''; } }
-    else if (a === 'mdel') { call('updateModels', { providerId: pid, changes: [], removeIds: [mid] }); }
-    else if (a === 'save-p') { const name = $('#np-name').value, baseUrl = $('#np-url').value, apiFormat = $('#np-fmt').value, apiKey = $('#np-key').value; if (name && baseUrl) call('saveProvider', { name, baseUrl, apiFormat, apiKey }, '供应商已保存'); }
+    else if (a === 'import') { const ids = [...document.querySelectorAll('[data-imp]:checked:not(:disabled)')].map(x => x.dataset.imp); if (ids.length) { collapsed.delete(import_.providerId); saveUi(); call('importModels', { providerId: import_.providerId, token: import_.token, ids }, '已导入', () => { for (const key of drafts.keys()) if (key.startsWith('imp:')) drafts.delete(key); render(); }); } }
+    else if (a === 'import-cancel') { for (const key of drafts.keys()) if (key.startsWith('imp:')) drafts.delete(key); render(); }
+    else if (a === 'add') { const input = document.querySelector('[data-add="' + id + '"]'); if (input.value.trim()) { call('addModel', { providerId: id, model: { id: input.value.trim() } }, undefined, () => { clearDrafts('add:' + id); render(); }); } }
+    else if (a === 'mdel') { call('updateModels', { providerId: pid, changes: [], removeIds: [mid] }, undefined, () => clearDrafts('model:' + pid + ':' + mid + ':')); }
+    else if (a === 'save-p') { const name = $('#np-name').value, baseUrl = $('#np-url').value, apiFormat = $('#np-fmt').value, apiKey = $('#np-key').value; if (name && baseUrl) call('saveProvider', { name, baseUrl, apiFormat, apiKey }, '供应商已保存', () => {
+      const submitted = { 'id:np-name': name, 'id:np-url': baseUrl, 'id:np-fmt': apiFormat, 'id:np-key': apiKey };
+      clearSubmitted(submitted);
+      render();
+    }); }
   });
   $('#page').querySelectorAll('[data-m]').forEach(el => el.onchange = () => {
     const pid = el.dataset.p, mid = el.dataset.mid, k = el.dataset.m;
     let value = el.type === 'checkbox' ? el.checked : el.type === 'number' ? Number(el.value) : el.value;
     if (k === 'efforts') value = value.split(',').map(s => s.trim()).filter(Boolean);
     if (k === 'defaultEffort' && value === '') value = null;
-    call('updateModels', { providerId: pid, changes: [{ id: mid, [k]: value }], removeIds: [] });
+    call('updateModels', { providerId: pid, changes: [{ id: mid, [k]: value }], removeIds: [] }, undefined, () => clearDraftIfUnchanged(fieldKey(el), el));
   });
   $('#page').querySelectorAll('[data-role]').forEach(el => el.onchange = () => {
-    call('setRoleModel', { role: el.dataset.role, model: JSON.parse(el.dataset.ref), enabled: el.checked });
+    call('setRoleModel', { role: el.dataset.role, model: JSON.parse(el.dataset.ref), enabled: el.checked }, undefined, () => clearDraftIfUnchanged(fieldKey(el), el));
   });
   const nativeToggle = $('#u-native');
   if (nativeToggle) nativeToggle.onchange = e => { showNative = e.target.checked; saveUi(); render(); };
+  $('#page').querySelectorAll('[data-order-drag]').forEach(handle => handle.onpointerdown = startDragTracking);
+}
+function dragNodes(drag) { return [...drag.container.querySelectorAll(drag.selector)]; }
+function dragOrder(drag) { return dragNodes(drag).map(node => node.dataset.orderId); }
+function sameOrder(left, right) { return left.length === right.length && left.every((id, index) => id === right[index]); }
+function restoreDragOrder(drag) {
+  const nodes = new Map(dragNodes(drag).map(node => [node.dataset.orderId, node]));
+  for (const id of drag.originalIds) {
+    const node = nodes.get(id);
+    if (node) drag.container.appendChild(node);
+  }
+}
+function stopAutoScroll() { if (dragRaf) cancelAnimationFrame(dragRaf); dragRaf = 0; }
+function updateDragPosition(x, y) {
+  const drag = dragState;
+  if (!drag?.started) return;
+  drag.lastX = x; drag.lastY = y;
+  const rect = drag.container.getBoundingClientRect();
+  const valid = x >= rect.left - 8 && x <= rect.right + 8 && y >= rect.top && y <= rect.bottom;
+  drag.valid = valid;
+  drag.container.classList.toggle('drag-target', valid);
+  drag.item.classList.toggle('drop-invalid', !valid);
+  if (!valid) return;
+  let before = null;
+  for (const node of dragNodes(drag)) {
+    if (node === drag.item) continue;
+    const box = node.getBoundingClientRect();
+    if (y < box.top + box.height / 2) { before = node; break; }
+  }
+  if (before) {
+    if (drag.item.nextSibling !== before) drag.container.insertBefore(drag.item, before);
+  } else if (drag.item !== drag.container.lastElementChild) drag.container.appendChild(drag.item);
+}
+function autoScrollFrame() {
+  dragRaf = 0;
+  const drag = dragState;
+  if (!drag?.started) return;
+  const edge = 58, height = window.innerHeight || document.documentElement.clientHeight;
+  let delta = 0;
+  if (drag.lastY < edge) delta = -Math.max(4, Math.round((edge - drag.lastY) / 3));
+  else if (drag.lastY > height - edge) delta = Math.max(4, Math.round((drag.lastY - (height - edge)) / 3));
+  if (delta) {
+    const scroller = document.scrollingElement || document.documentElement;
+    const before = scroller.scrollTop;
+    scroller.scrollTop += delta;
+    if (scroller.scrollTop !== before) updateDragPosition(drag.lastX, drag.lastY);
+  }
+  if (dragState === drag && drag.started && (drag.lastY < edge || drag.lastY > height - edge)) dragRaf = requestAnimationFrame(autoScrollFrame);
+}
+function startAutoScroll() { if (!dragRaf) dragRaf = requestAnimationFrame(autoScrollFrame); }
+function startDragVisual(drag, event) {
+  drag.started = true;
+  drag.lastX = event.clientX; drag.lastY = event.clientY;
+  document.body.classList.add('is-dragging');
+  drag.item.classList.add('dragging');
+  drag.container.classList.add('drag-target');
+  if (drag.scope === 'providers') drag.container.classList.add('provider-order-dragging');
+  updateDragPosition(event.clientX, event.clientY);
+  startAutoScroll();
+}
+function stopDragTracking(drag) {
+  stopAutoScroll();
+  window.removeEventListener('pointermove', onDragMove);
+  window.removeEventListener('pointerup', onDragEnd);
+  window.removeEventListener('pointercancel', onDragCancel);
+  window.removeEventListener('blur', onDragBlur);
+  document.removeEventListener('keydown', onDragKey, true);
+  try { if (drag.handle.hasPointerCapture?.(drag.pointerId)) drag.handle.releasePointerCapture(drag.pointerId); } catch {}
+  document.body.classList.remove('is-dragging');
+  drag.item.classList.remove('dragging', 'drop-invalid');
+  drag.container.classList.remove('drag-target', 'provider-order-dragging');
+  dragState = null;
+}
+function cancelDrag({ restore = true, notify = false, render: rerender = false, preserveFocus = false } = {}) {
+  const drag = dragState;
+  if (!drag) return;
+  const focus = drag.focus;
+  if (restore && drag.started) restoreDragOrder(drag);
+  stopDragTracking(drag);
+  if (preserveFocus) focusWithFallback(focus);
+  if (notify) toast('列表已更新，请重新调整', true);
+  if (rerender) flushDeferredState();
+}
+function startDragTracking(event) {
+  if (dragState || event.button !== 0 || event.isPrimary === false) return;
+  const handle = event.currentTarget;
+  if (!handle || handle.disabled) return;
+  const scope = handle.dataset.orderScope, providerId = scope === 'models' ? (handle.dataset.orderProvider || null) : null;
+  const id = handle.dataset.orderId;
+  if (!id || !orderSortableFor(scope, providerId) || orderPendingFor(scope, providerId)) return;
+  const token = orderTokenFor(scope, providerId);
+  if (!token) return;
+  const item = scope === 'providers' ? handle.closest('[data-pcard]') : handle.closest('[data-mrow]');
+  const container = scope === 'providers' ? document.querySelector('[data-plist]') : item?.closest('[data-mlist]');
+  if (!item || !container) return;
+  const selector = scope === 'providers' ? '[data-pcard]' : '[data-mrow]';
+  const originalIds = dragNodes({ container, selector });
+  if (originalIds.length < 2) return;
+  // Keep focus (and its text selection) in place for pointer drags. Keyboard
+  // users get the same ordering through the explicit up/down buttons.
+  if (event.pointerType !== 'touch') event.preventDefault();
+  const drag = { pointerId: event.pointerId, handle, item, container, selector, scope, providerId, id, token,
+    started: false, valid: true, startX: event.clientX, startY: event.clientY, lastX: event.clientX, lastY: event.clientY,
+    focus: captureFocus(), originalIds: originalIds.map(node => node.dataset.orderId) };
+  dragState = drag;
+  try { handle.setPointerCapture(event.pointerId); } catch {}
+  window.addEventListener('pointermove', onDragMove, { passive: false });
+  window.addEventListener('pointerup', onDragEnd);
+  window.addEventListener('pointercancel', onDragCancel);
+  window.addEventListener('blur', onDragBlur);
+  document.addEventListener('keydown', onDragKey, true);
+}
+function onDragMove(event) {
+  const drag = dragState;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  drag.lastX = event.clientX; drag.lastY = event.clientY;
+  if (!drag.started) {
+    if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4) return;
+    event.preventDefault();
+    startDragVisual(drag, event);
+  } else {
+    event.preventDefault();
+    updateDragPosition(event.clientX, event.clientY);
+    const height = window.innerHeight || document.documentElement.clientHeight;
+    if (!dragRaf && (drag.lastY < 58 || drag.lastY > height - 58)) startAutoScroll();
+  }
+}
+function onDragEnd(event) {
+  const drag = dragState;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  if (!drag.started) { stopDragTracking(drag); flushDeferredState(); return; }
+  event.preventDefault();
+  updateDragPosition(event.clientX, event.clientY);
+  const next = dragOrder(drag), scope = drag.scope, providerId = drag.providerId, token = drag.token;
+  if (!drag.valid || sameOrder(drag.originalIds, next)) {
+    cancelDrag({ restore: true, notify: false, render: false, preserveFocus: true });
+    flushDeferredState();
+    return;
+  }
+  const focus = drag.focus;
+  stopDragTracking(drag);
+  focusWithFallback(focus);
+  if (deferredState) { state = deferredState; deferredState = null; }
+  void performOrderRequest('reorderPanelList', scope, providerId, next, token);
+}
+function onDragCancel(event) {
+  if (!dragState) return;
+  try { event.preventDefault(); } catch {}
+  cancelDrag({ restore: true, notify: false, render: false, preserveFocus: true });
+  flushDeferredState();
+}
+function onDragBlur() {
+  if (!dragState) return;
+  cancelDrag({ restore: true, notify: false, render: false, preserveFocus: true });
+  flushDeferredState();
+}
+function onDragKey(event) {
+  if (!dragState || event.key !== 'Escape') return;
+  event.preventDefault(); event.stopPropagation();
+  cancelDrag({ restore: true, notify: false, render: false, preserveFocus: true });
+  flushDeferredState();
 }
 function editProvider(id) {
   const p = state.providers.find(x => x.id === id); if (!p) return;
-  const div = document.querySelector('[data-prov="' + id + '"]');
-  div.innerHTML = '<div class="row mt8"><input id="ep-name" value="' + esc(p.name) + '">' +
-    '<input id="ep-url" value="' + esc(p.baseUrl) + '" class="grow">' +
-    '<select id="ep-fmt">' + ['openai', 'openai-responses', 'anthropic'].map(f => '<option ' + (f === p.apiFormat ? 'selected' : '') + '>' + f + '</option>').join('') + '</select>' +
-    '<input id="ep-key" placeholder="' + (p.keyConfigured ? '(留空保持不变)' : 'API Key') + '" class="grow" type="password">' +
+  const div = document.querySelector('[data-prov="' + id + '"]'); if (!div) return;
+  editingProviders.add(id);
+  const key = name => 'edit:' + id + ':' + name;
+  div.innerHTML = '<div class="row mt8"><input id="ep-name" data-draft="' + esc(key('name')) + '" data-f="name" value="' + esc(p.name) + '">' +
+    '<input id="ep-url" data-draft="' + esc(key('url')) + '" data-f="url" value="' + esc(p.baseUrl) + '" class="grow">' +
+    '<select id="ep-fmt" data-draft="' + esc(key('fmt')) + '" data-f="fmt">' + ['openai', 'openai-responses', 'anthropic'].map(f => '<option ' + (f === p.apiFormat ? 'selected' : '') + '>' + f + '</option>').join('') + '</select>' +
+    '<input id="ep-key" data-draft="' + esc(key('key')) + '" data-f="key" placeholder="' + (p.keyConfigured ? '(留空保持不变)' : 'API Key') + '" class="grow" type="password">' +
     '<button data-a="save-e">保存</button><button class="sec" data-a="cancel-e">取消</button></div>';
-  div.querySelector('[data-a="save-e"]').onclick = () => call('saveProvider', { id, name: $('#ep-name').value, baseUrl: $('#ep-url').value, apiFormat: $('#ep-fmt').value, apiKey: $('#ep-key').value || undefined }, '已保存');
-  div.querySelector('[data-a="cancel-e"]').onclick = () => { div.innerHTML = ''; };
+  const field = name => div.querySelector('[data-f="' + name + '"]');
+  div.querySelector('[data-a="save-e"]').onclick = () => {
+    const submitted = {
+      [key('name')]: field('name').value, [key('url')]: field('url').value,
+      [key('fmt')]: field('fmt').value, [key('key')]: field('key').value,
+    };
+    return call('saveProvider', {
+      id, name: submitted[key('name')], baseUrl: submitted[key('url')], apiFormat: submitted[key('fmt')],
+      apiKey: submitted[key('key')] || undefined,
+    }, '已保存', () => {
+      editingProviders.delete(id);
+      clearSubmitted(submitted);
+      render();
+    });
+  };
+  div.querySelector('[data-a="cancel-e"]').onclick = () => { editingProviders.delete(id); clearEditDrafts(id); div.innerHTML = ''; };
 }
 
 /* ---------- Fusion 预设 ---------- */
@@ -308,7 +855,11 @@ function renderFusion() {
     '<button data-a="mk">创建</button></div></div>';
   $('#page').querySelectorAll('[data-a]').forEach(el => el.onclick = () => {
     const a = el.dataset.a;
-    if (a === 'mk') { const name = $('#fp-name').value, lead = $('#fp-lead').value, sidekick = $('#fp-side').value; if (name && lead && sidekick) call('saveFusionPreset', { name, lead: JSON.parse(lead), sidekick: JSON.parse(sidekick) }, '预设已创建'); }
+    if (a === 'mk') { const name = $('#fp-name').value, lead = $('#fp-lead').value, sidekick = $('#fp-side').value; if (name && lead && sidekick) call('saveFusionPreset', { name, lead: JSON.parse(lead), sidekick: JSON.parse(sidekick) }, '预设已创建', () => {
+      const submitted = { 'id:fp-name': name, 'id:fp-lead': lead, 'id:fp-side': sidekick };
+      clearSubmitted(submitted);
+      render();
+    }); }
     else if (a === 'sel') call('selectFusion', { uid: el.dataset.uid }, '已设为当前 Fusion，请新建会话生效');
     else if (a === 'del') call('deleteFusionPreset', { id: el.dataset.id });
   });
@@ -327,7 +878,7 @@ function renderNative() {
       : '<span class="muted">尚未观测到官方模型目录（模型列表刷新后出现）。</span>') + '</div>' +
     '<p class="foot">列表模式为「只显示 BYOK」时全部官方模型自动隐藏；此处可单独隐藏个别官方条目。</p>';
   $('#page').querySelector('[data-a="ref"]')?.addEventListener('click', () => call('refreshNativeModels', {}));
-  $('#page').querySelectorAll('[data-h]').forEach(el => el.onchange = () => call('setNativeModelHidden', { uid: el.dataset.h, hidden: el.checked }));
+  $('#page').querySelectorAll('[data-h]').forEach(el => el.onchange = () => call('setNativeModelHidden', { uid: el.dataset.h, hidden: el.checked }, undefined, () => clearDraftIfUnchanged(fieldKey(el), el)));
 }
 
 /* ---------- 设置 ---------- */
@@ -357,16 +908,16 @@ function renderSettings() {
     item('官方缓存有效期', '<input id="w-ottl" type="number" min="1" max="60" value="' + esc(Math.round((warm.officialTtlSeconds || 300) / 60)) + '"> 分钟') +
     '</div><p class="foot">保温请求不进入对话；每次按缓存读取计费。按当前有效期，约每 ' + esc(warmEvery(warm.ttlSeconds || 300)) + ' 发一次（官方约每 ' + esc(warmEvery(warm.officialTtlSeconds || 300)) + '）。</p>' +
     '<h3>配置</h3><div class="card list">' + item('配置文件', '<span class="mono">~/.ddevin/config.json</span>') + '</div><p class="foot">直接编辑会热重载生效。</p>';
-  $('#s-mode').onchange = e => call('setListMode', { mode: e.target.value }, '列表模式已更新');
-  $('#s-level').onchange = e => call('setLogLevel', { level: e.target.value }, '日志级别已更新');
-  const warmSet = (key, value) => call('setCacheWarm', { [key]: value });
-  $('#w-enabled').onchange = e => warmSet('enabled', e.target.checked);
-  $('#w-byok').onchange = e => warmSet('byok', e.target.checked);
-  $('#w-official').onchange = e => warmSet('official', e.target.checked);
-  $('#w-stream').onchange = e => warmSet('whileStreaming', e.target.checked);
-  $('#w-ttl').onchange = e => { const v = Math.round(Number(e.target.value)); if (v >= 1 && v <= 60) warmSet('ttlSeconds', v * 60); };
-  $('#w-ottl').onchange = e => { const v = Math.round(Number(e.target.value)); if (v >= 1 && v <= 60) warmSet('officialTtlSeconds', v * 60); };
-  $('#w-gap').onchange = e => { const v = Math.round(Number(e.target.value)); if (v >= 5 && v <= 240) warmSet('maxGapMinutes', v); };
+  $('#s-mode').onchange = e => call('setListMode', { mode: e.target.value }, '列表模式已更新', () => clearDrafts('id:s-mode'));
+  $('#s-level').onchange = e => call('setLogLevel', { level: e.target.value }, '日志级别已更新', () => clearDrafts('id:s-level'));
+  const warmSet = (key, value, field) => call('setCacheWarm', { [key]: value }, undefined, () => clearDrafts('id:' + field));
+  $('#w-enabled').onchange = e => warmSet('enabled', e.target.checked, 'w-enabled');
+  $('#w-byok').onchange = e => warmSet('byok', e.target.checked, 'w-byok');
+  $('#w-official').onchange = e => warmSet('official', e.target.checked, 'w-official');
+  $('#w-stream').onchange = e => warmSet('whileStreaming', e.target.checked, 'w-stream');
+  $('#w-ttl').onchange = e => { const v = Math.round(Number(e.target.value)); if (v >= 1 && v <= 60) warmSet('ttlSeconds', v * 60, 'w-ttl'); };
+  $('#w-ottl').onchange = e => { const v = Math.round(Number(e.target.value)); if (v >= 1 && v <= 60) warmSet('officialTtlSeconds', v * 60, 'w-ottl'); };
+  $('#w-gap').onchange = e => { const v = Math.round(Number(e.target.value)); if (v >= 5 && v <= 240) warmSet('maxGapMinutes', v, 'w-gap'); };
 }
 
 /* ---------- 日志 ---------- */

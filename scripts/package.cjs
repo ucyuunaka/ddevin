@@ -99,9 +99,16 @@ entries.push({ name: 'extension.vsixmanifest', data: Buffer.from(
 entries.push({ name: 'extension/package.json', data: fs.readFileSync(path.join(root, 'package.json')) });
 walk(path.join(root, 'src'), 'extension/src/', entries);
 if (fs.existsSync(path.join(root, 'media'))) walk(path.join(root, 'media'), 'extension/media/', entries);
-for (const doc of ['README.md', 'LICENSE']) {
-  const file = path.join(root, doc);
-  if (fs.existsSync(file)) entries.push({ name: 'extension/' + doc, data: fs.readFileSync(file) });
+// extension/README.md is what the IDE shows on the extension details page.
+// publish/README.md is the single source of truth for that text; the public
+// tree has no publish/ directory, where README.md already is that file.
+const readme = path.join(root, 'publish/README.md');
+const readmeFile = fs.existsSync(readme) ? readme : path.join(root, 'README.md');
+if (fs.existsSync(readmeFile)) {
+  entries.push({ name: 'extension/README.md', data: fs.readFileSync(readmeFile) });
+}
+if (fs.existsSync(path.join(root, 'LICENSE'))) {
+  entries.push({ name: 'extension/LICENSE', data: fs.readFileSync(path.join(root, 'LICENSE')) });
 }
 
 const output = path.join(root, `${pkg.name}-${pkg.version}.vsix`);

@@ -6,6 +6,7 @@
 const crypto = require('node:crypto');
 const { renderPanel } = require('./view.cjs');
 const { PanelInputError } = require('./model.cjs');
+const ORDER_COMMANDS = new Set(['reorderPanelList', 'prioritizeEnabledPanelList']);
 function createPanelController({ vscode, context, manager, safeError, readLogs = async () => ({ status: 'unsupported', entries: [] }), connectionStatus = () => null, log = () => {} }) {
   let panel;
   let logsPending = false;
@@ -44,13 +45,23 @@ function createPanelController({ vscode, context, manager, safeError, readLogs =
       if (message.type === 'logs.refresh') { await refreshLogs(); return; }
       try {
         const state = await manager.dispatch(message.type, message.payload);
-        await postState(target, state);
+        // A sort changes only the sidecar. Other webviews in this host must see
+        // the result promptly, and the originating view must receive the
+        // authoritative state before its result clears the temporary preview.
+        if (ORDER_COMMANDS.has(message.type)) {
+          await Promise.all([...targets].map(item => postState(item, state).catch(() => false)));
+        } else await postState(target, state);
         await target.webview.postMessage({ type: 'result', id: message.id, ok: true });
       } catch (error) {
         const text = error instanceof PanelInputError ? error.message : safeError(error).message;
-        await target.webview.postMessage({ type: 'result', id: message.id, ok: false, error: text });
         log('warn', 'panel-op-failed', { op: message.type, error: text });
-        try { await postState(target, manager.state()); } catch {}
+        // Refresh before the result: the view can then discard its optimistic
+        // order while rendering the real saved state, not an older snapshot.
+        try {
+          const latest = manager.state();
+          await Promise.all([...targets].map(item => postState(item, latest).catch(() => false)));
+        } catch {}
+        await target.webview.postMessage({ type: 'result', id: message.id, ok: false, error: text });
       }
     });
     const timer = setInterval(() => { void refreshLogs().catch(() => {}); }, 3000);

@@ -8,6 +8,7 @@ const { buildCatalog, buildRoleLists, refKey, presetUid, normalizeFusionConfig, 
 const { discover: discoverModels, normalizeBaseUrlPath } = require('../config.cjs');
 const { modelSupportsImages, modelEfforts } = require('../capabilities.cjs');
 const { normalizeWarmSettings } = require('../runtime/warmer.cjs');
+const { createOrderStore, OrderStoreError } = require('./order.cjs');
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value || {}, key);
 class PanelInputError extends Error {}
 const fail = message => { throw new PanelInputError(message); };
@@ -52,7 +53,7 @@ const insecureHttp = provider => {
   try { const url = new URL(provider.baseUrl); return url.protocol === 'http:' && !['127.0.0.1', 'localhost', '::1', '[::1]'].includes(url.hostname); }
   catch { return false; }
 };
-function publicState(config, selectedFusionUid, nativeModels = []) {
+function publicState(config, selectedFusionUid, nativeModels = [], panelOrder = null) {
   const catalog = buildCatalog({ ...config, enabled: true }, nativeModels);
   const hidden = new Set([...(catalog.hiddenNativeModelUids || []), ...(catalog.hiddenFusionUids || [])]);
   const roleLists = buildRoleLists(config, nativeModels);
@@ -96,16 +97,17 @@ function publicState(config, selectedFusionUid, nativeModels = []) {
     fusionChoices: (catalog.presetStates || []).filter(preset => preset.available).map(preset => ({ uid: preset.uid, label: preset.name })),
     selectedFusionPresetId: catalog.fusions?.[selectedFusionUid]?.presetId ?? null,
     effortValues: EFFORT_VALUES,
+    panelOrder,
   };
 }
-function createManager({ read, write, discover = discoverModels, afterChange = async () => {}, selectFusion = async () => {}, selectedFusion = () => '', nativeModels = () => [], refreshNativeModels = async () => {}, nativeCatalogStatus = () => 'empty' }) {
+function createManager({ read, write, discover = discoverModels, afterChange = async () => {}, selectFusion = async () => {}, selectedFusion = () => '', nativeModels = () => [], refreshNativeModels = async () => {}, nativeCatalogStatus = () => 'empty', orderStore = createOrderStore() }) {
   let queue = Promise.resolve();
   let pendingImport;
   const signature = provider => JSON.stringify([provider.id, provider.baseUrl, provider.apiFormat, provider.apiKey]);
-  const state = () => {
-    const config = read(), result = publicState(config, selectedFusion(), nativeModels());
+  const makeState = (config = read()) => {
+    const result = publicState(config, selectedFusion(), nativeModels(), orderStore.snapshot(config));
     result.nativeCatalogStatus = nativeCatalogStatus();
-    const provider = config.providers.find(p => p.id === pendingImport?.providerId);
+    const provider = (Array.isArray(config.providers) ? config.providers : []).find(p => p.id === pendingImport?.providerId);
     result.importCandidates = provider && signature(provider) === pendingImport.signature ? {
       providerId: provider.id, token: pendingImport.token,
       models: pendingImport.models.map(model => ({ id: model.id, label: model.label || model.id,
@@ -113,13 +115,32 @@ function createManager({ read, write, discover = discoverModels, afterChange = a
     } : null;
     return result;
   };
+  const state = () => makeState();
+  const asPanelError = error => {
+    if (error instanceof PanelInputError) return error;
+    if (error instanceof OrderStoreError) return new PanelInputError(error.message);
+    return new PanelInputError('面板展示顺序保存失败：' + (error?.message || '未知错误'));
+  };
+  async function applyPanelOrder(type, payload) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail('操作参数无效。');
+    try {
+      if (type === 'reorderPanelList') {
+        await orderStore.reorder({ readConfig: read, scope: payload.scope, providerId: payload.providerId, ids: payload.ids, expectedToken: payload.expectedToken });
+      } else {
+        await orderStore.prioritize({ readConfig: read, scope: payload.scope, providerId: payload.providerId, expectedToken: payload.expectedToken });
+      }
+      return state();
+    } catch (error) { throw asPanelError(error); }
+  }
   async function apply(type, payload = {}) {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail('操作参数无效。');
     if (type === 'ready' || type === 'refreshNativeModels') { await refreshNativeModels(); return state(); }
+    if (type === 'reorderPanelList' || type === 'prioritizeEnabledPanelList') return applyPanelOrder(type, payload);
     let config = normalizeFusionConfig(read(), nativeModels());
     if (!Array.isArray(config.providers)) config.providers = [];
     for (const provider of config.providers) if (!Array.isArray(provider.models)) provider.models = [];
     const diagnosticsBefore = new Set(buildCatalog(structuredClone(config), nativeModels()).diagnostics.map(item => JSON.stringify(item)));
+    let appendPreparation = null;
     if (type === 'selectFusion') {
       if (config.enabled === false) fail('请先启用 ddevin。');
       if (!own(buildCatalog(config, nativeModels()).fusions, payload.uid)) fail('该 Fusion 组合已不可用，请重新选择。');
@@ -165,7 +186,11 @@ function createManager({ read, write, discover = discoverModels, afterChange = a
           const previousName = existing.name;
           Object.assign(existing, { name, baseUrl: url, apiFormat: payload.apiFormat, apiKey });
           if (name !== previousName) for (const model of existing.models) if (model.label?.startsWith(previousName + ' · ')) model.label = name + model.label.slice(previousName.length);
-        } else config.providers.push({ id: 'provider-' + randomUUID(), name, baseUrl: url, apiFormat: payload.apiFormat, apiKey, enabled: true, models: [] });
+        } else {
+          const provider = { id: 'provider-' + randomUUID(), name, baseUrl: url, apiFormat: payload.apiFormat, apiKey, enabled: true, models: [] };
+          config.providers.push(provider);
+          appendPreparation = { providerId: provider.id, modelIds: [], allowMissingProvider: true };
+        }
         break;
       }
       case 'deleteProvider': providerAt(config, payload.id); config.providers = config.providers.filter(p => p.id !== payload.id); break;
@@ -190,11 +215,12 @@ function createManager({ read, write, discover = discoverModels, afterChange = a
             new Set(payload.ids).size !== payload.ids.length) fail('请选择要导入的模型。');
         const candidates = new Map(pendingImport.models.map(model => [model.id, model]));
         if (payload.ids.some(id => !candidates.has(id))) fail('所选模型不在获取的列表中，请重新选择。');
-        const existing = new Set(provider.models.map(model => model.id));
-        for (const id of payload.ids) if (!existing.has(id)) {
-          const candidate = candidates.get(id);
-          provider.models.push({ ...candidate, label: provider.name + ' · ' + id, enabled: true });
+        const selected = new Set(payload.ids), existing = new Set(provider.models.map(model => model.id));
+        const additions = pendingImport.models.filter(model => selected.has(model.id) && !existing.has(model.id));
+        for (const candidate of additions) {
+          provider.models.push({ ...candidate, label: provider.name + ' · ' + candidate.id, enabled: true });
         }
+        if (additions.length) appendPreparation = { providerId: provider.id, modelIds: additions.map(model => model.id) };
         break;
       }
       case 'updateModels': {
@@ -213,6 +239,7 @@ function createManager({ read, write, discover = discoverModels, afterChange = a
         const id = text(input?.id, '模型 ID');
         if (provider.models.some(m => m.id === id)) fail('该模型已经在列表中。');
         provider.models.push(modelPatch(input, { id, label: id, enabled: true, efforts: [], contextWindow: 272000, maxOutputTokens: 131072 }));
+        appendPreparation = { providerId: provider.id, modelIds: [id] };
         break;
       }
       case 'setNativeModelHidden': {
@@ -314,9 +341,33 @@ function createManager({ read, write, discover = discoverModels, afterChange = a
     // 'setEnabled' which still runs its enable/disable side effects in memory.
     if (config.__invalid) {
       if (type !== 'setEnabled') fail('配置文件已损坏，已阻止写入；请修复或删除 ~/.ddevin/config.json 后重试。');
-    } else await write(config);
+    } else {
+      if (appendPreparation) {
+        try {
+          await orderStore.prepareAppend({ readConfig: read, ...appendPreparation });
+        } catch (error) {
+          throw new PanelInputError('配置未更新，面板展示顺序准备失败：' + (error?.message || '未知错误') +
+            ' 请修复展示顺序文件或权限后重试。');
+        }
+      }
+      await write(config);
+    }
+    // The business write already committed. Preference cleanup is a second file,
+    // so a failure must be reported as such instead of pretending the delete
+    // rolled back. Run cleanup before afterChange so a failing runtime side
+    // effect cannot skip it; afterChange still gets to refresh real state.
+    let orderCleanupError;
+    try {
+      if (type === 'deleteProvider') await orderStore.removeProvider({ readConfig: read, providerId: payload.id });
+      else if (type === 'updateModels' && Array.isArray(payload.removeIds) && payload.removeIds.length) {
+        await orderStore.removeModels({ readConfig: read, providerId: payload.providerId, modelIds: payload.removeIds });
+      }
+    } catch (error) { orderCleanupError = error; }
     if (type === 'importModels') pendingImport = undefined;
     await afterChange(type, type === 'setEnabled' ? { enabled: config.enabled } : {});
+    if (orderCleanupError) {
+      throw new PanelInputError('配置已更新，但面板展示顺序清理失败：' + (orderCleanupError?.message || '未知错误') + ' 请重试或修复展示顺序文件。');
+    }
     return state();
   }
   return { state, dispatch(type, payload) {

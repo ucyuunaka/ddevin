@@ -2,7 +2,7 @@
   "name": "ddevin",
   "displayName": "ddevin",
   "description": "Bring your own model providers into Devin: OpenAI- and Anthropic-compatible endpoints injected into the native model list, including Fusion presets.",
-  "version": "0.3.1",
+  "version": "0.3.3",
   "icon": "media/icon.png",
   "publisher": "ucyuunaka",
   "author": "ucyuunaka",
