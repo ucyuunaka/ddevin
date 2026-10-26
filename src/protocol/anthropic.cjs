@@ -42,7 +42,7 @@ function buildAnthropicBody(request, route, provider) {
   };
   for (const message of request.messages) {
     if (message.role === 'tool') {
-      push('user', [{ type: 'tool_result', tool_use_id: message.toolCallId, content: message.content || '', ...(message.toolResultIsError ? { is_error: true } : {}) }]);
+      push('user', [{ type: 'tool_result', tool_use_id: message.toolCallId, content: message.images?.length ? textBlocks(message) : message.content || '', ...(message.toolResultIsError ? { is_error: true } : {}) }]);
     } else if (message.role === 'system') {
       if (!messages.length) { if (message.content) system.push(message.content); }
       else push('user', message.content ? [{ type: 'text', text: message.content }] : []);

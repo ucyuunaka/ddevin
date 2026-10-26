@@ -45,11 +45,20 @@ function buildRequestBody(request, route, provider) {
   const chat = isChatFormat(provider.apiFormat);
   const messages = [];
   if (request.systemPrompt !== '') messages.push({ role: chat ? 'system' : 'developer', content: request.systemPrompt });
+  let toolImages = [];
+  const flushToolImages = () => {
+    if (toolImages.length) messages.push({ role: 'user', content: toolImages });
+    toolImages = [];
+  };
   for (const message of request.messages) {
     if (message.role === 'tool') {
-      messages.push(chat ? { role: 'tool', tool_call_id: message.toolCallId, content: message.content } : { type: 'function_call_output', call_id: message.toolCallId, output: message.content });
+      messages.push(chat ? { role: 'tool', tool_call_id: message.toolCallId, content: message.content } : { type: 'function_call_output', call_id: message.toolCallId, output: contentOf(message, false) });
+      if (chat && message.images?.length) {
+        toolImages.push(...contentOf({ ...message, content: `Images returned by tool call ${message.toolCallId}:` }, true));
+      }
       continue;
     }
+    flushToolImages();
     const content = contentOf(message, chat);
     if (chat) {
       const item = { role: message.role, content };
@@ -65,6 +74,7 @@ function buildRequestBody(request, route, provider) {
       for (const tool of message.toolCalls || []) messages.push({ type: 'function_call', call_id: tool.id, name: tool.name, arguments: tool.arguments });
     }
   }
+  flushToolImages();
   const body = { model: route.model, [chat ? 'messages' : 'input']: messages, stream: true };
   if (chat) body.stream_options = { include_usage: true };
   const maxTokens = request.maxTokens ?? route.maxOutputTokens ?? provider.maxOutputTokens;
